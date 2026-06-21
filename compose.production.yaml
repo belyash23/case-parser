@@ -1,0 +1,22 @@
+﻿services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    image: case-parser-app:latest
+    container_name: case-parser-app
+    restart: unless-stopped
+    working_dir: /var/www/html
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    command: ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
+    env_file:
+      - .env
+    environment:
+      COMPOSER_HOME: /tmp/composer
+      npm_config_cache: /tmp/npm
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${APP_HTTP_BIND:-127.0.0.1:18080}:8000"
+    volumes:
+      - .:/var/www/html
