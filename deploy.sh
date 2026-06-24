@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -Eeuo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
@@ -35,17 +35,24 @@ if ! grep -q '^APP_KEY=base64:' .env 2>/dev/null; then
     run_app php artisan key:generate --force --no-interaction
 fi
 
-log "Preparing Laravel caches and storage"
-run_app php artisan optimize:clear
+log "Preparing Laravel bootstrap files"
+run_app php artisan config:clear
+run_app php artisan route:clear
+run_app php artisan view:clear
 run_app php artisan storage:link --force || true
 
 log "Running migrations"
 run_app php artisan migrate --force --no-interaction
 
+log "Seeding parser courts"
+run_app php artisan db:seed --class=IzhevskCourtsSeeder --force --no-interaction
+
 log "Caching production config"
+run_app php artisan optimize:clear
 run_app php artisan optimize
 
 log "Restarting application container"
 docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --force-recreate "${SERVICE}"
 
 docker compose -f "${COMPOSE_FILE}" ps
+
