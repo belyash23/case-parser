@@ -4,6 +4,35 @@ set -Eeuo pipefail
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 COMPOSE_FILE="${COMPOSE_FILE:-compose.production.yaml}"
 SERVICE="${SERVICE:-app}"
+FRESH_DB=0
+
+usage() {
+    cat <<'USAGE'
+Usage: ./deploy.sh [--fresh-db]
+
+Options:
+  --fresh-db   Drop all database tables and run migrations from scratch before seeding parser courts.
+  -h, --help   Show this help.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --fresh-db)
+            FRESH_DB=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
 
 cd "${PROJECT_DIR}"
 
@@ -41,8 +70,13 @@ run_app php artisan route:clear
 run_app php artisan view:clear
 run_app php artisan storage:link --force || true
 
-log "Running migrations"
-run_app php artisan migrate --force --no-interaction
+if [[ "${FRESH_DB}" -eq 1 ]]; then
+    log "Refreshing database from scratch (--fresh-db)"
+    run_app php artisan migrate:fresh --force --no-interaction
+else
+    log "Running migrations"
+    run_app php artisan migrate --force --no-interaction
+fi
 
 log "Seeding parser courts"
 run_app php artisan db:seed --class=IzhevskCourtsSeeder --force --no-interaction
@@ -55,4 +89,3 @@ log "Restarting application container"
 docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --force-recreate "${SERVICE}"
 
 docker compose -f "${COMPOSE_FILE}" ps
-

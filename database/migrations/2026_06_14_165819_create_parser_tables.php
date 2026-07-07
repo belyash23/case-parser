@@ -98,10 +98,20 @@ return new class extends Migration
         Schema::create('cases', function (Blueprint $table): void {
             $table->id();
             $table->string('normalized_case_number')->nullable();
+            $table->json('normalized_case_number_aliases_json')->nullable();
             $table->foreignId('primary_court_id')->nullable()->constrained('courts')->nullOnDelete();
             $table->text('category_raw')->nullable();
             $table->string('category_normalized')->nullable();
-            $table->string('proceeding_type')->nullable();
+            $table->json('category_path_json')->nullable();
+            $table->string('category_level_1')->nullable();
+            $table->string('category_level_2')->nullable();
+            $table->string('category_level_3')->nullable();
+            $table->string('category_level_4')->nullable();
+            $table->string('category_leaf')->nullable();
+            $table->string('case_type')->nullable();
+            $table->string('dispute_status')->default('unknown');
+            $table->string('final_disposition_type')->nullable();
+            $table->string('chain_status')->default('single_court');
             $table->date('received_date')->nullable();
             $table->date('final_observed_date')->nullable();
             $table->date('observation_window_from')->nullable();
@@ -114,6 +124,8 @@ return new class extends Migration
 
             $table->unique(['primary_court_id', 'normalized_case_number'], 'cases_court_number_unique');
             $table->index(['is_training_candidate', 'received_date', 'final_observed_date'], 'cases_training_window_index');
+            $table->index(['dispute_status', 'chain_status']);
+            $table->index(['case_type', 'category_normalized']);
         });
 
         Schema::create('case_instances', function (Blueprint $table): void {
@@ -125,34 +137,50 @@ return new class extends Migration
             $table->text('source_url');
             $table->string('source_url_hash', 64)->index();
             $table->string('external_case_number')->nullable();
+            $table->json('normalized_case_number_aliases_json')->nullable();
             $table->string('case_uid')->nullable();
             $table->string('external_case_id')->nullable();
+            $table->string('source_case_type_id')->nullable();
+            $table->string('case_type')->nullable();
             $table->string('instance_level')->default('first');
-            $table->string('status_raw')->nullable();
-            $table->string('status_normalized')->nullable();
+            $table->string('court_instance_status_raw')->nullable();
+            $table->string('court_instance_status_normalized')->nullable();
+            $table->string('dispute_status_normalized')->nullable();
+            $table->string('disposition_type')->nullable();
             $table->string('result_raw')->nullable();
             $table->string('result_normalized')->nullable();
             $table->date('started_at')->nullable();
             $table->date('completed_at')->nullable();
             $table->text('category_raw')->nullable();
             $table->string('category_normalized')->nullable();
+            $table->json('category_path_json')->nullable();
+            $table->string('category_level_1')->nullable();
+            $table->string('category_level_2')->nullable();
+            $table->string('category_level_3')->nullable();
+            $table->string('category_level_4')->nullable();
+            $table->string('category_leaf')->nullable();
             $table->timestamps();
 
             $table->unique(['court_id', 'case_uid'], 'case_instances_court_uid_unique');
             $table->unique(['court_id', 'source_url_hash'], 'case_instances_court_url_unique');
             $table->index(['court_id', 'instance_level']);
+            $table->index(['court_instance_status_normalized', 'completed_at'], 'case_instances_court_status_index');
+            $table->index(['dispute_status_normalized', 'disposition_type'], 'case_instances_dispute_status_index');
         });
 
         Schema::create('case_parties', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('case_instance_id')->constrained()->cascadeOnDelete();
             $table->string('role');
+            $table->string('role_group')->default('unknown');
             $table->string('party_type')->default('unknown');
+            $table->boolean('is_hidden')->default(false);
             $table->string('source_role')->nullable();
             $table->unsignedTinyInteger('confidence')->default(0);
             $table->timestamps();
 
-            $table->index(['role', 'party_type']);
+            $table->index(['role', 'role_group']);
+            $table->index(['party_type', 'is_hidden']);
         });
 
         Schema::create('case_events', function (Blueprint $table): void {
@@ -164,7 +192,6 @@ return new class extends Migration
             $table->string('event_type_normalized')->default('unknown');
             $table->text('event_result_raw')->nullable();
             $table->string('event_result_normalized')->nullable();
-            $table->text('source_url')->nullable();
             $table->string('event_fingerprint', 64);
             $table->timestamps();
 
@@ -190,13 +217,17 @@ return new class extends Migration
         Schema::create('case_chain_links', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('source_instance_id')->constrained('case_instances')->cascadeOnDelete();
-            $table->foreignId('target_instance_id')->constrained('case_instances')->cascadeOnDelete();
+            $table->foreignId('target_instance_id')->nullable()->constrained('case_instances')->nullOnDelete();
             $table->string('link_type')->default('unknown');
+            $table->string('status')->default('pending');
+            $table->string('matched_by')->nullable();
             $table->decimal('confidence', 5, 4)->default(0);
             $table->json('evidence_json')->nullable();
             $table->timestamps();
 
             $table->unique(['source_instance_id', 'target_instance_id', 'link_type'], 'case_chain_links_unique');
+            $table->index(['link_type', 'status']);
+            $table->index(['link_type', 'confidence']);
         });
 
         Schema::create('parser_errors', function (Blueprint $table): void {

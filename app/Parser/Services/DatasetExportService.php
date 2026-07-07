@@ -8,11 +8,11 @@ use Illuminate\Support\Facades\Storage;
 
 class DatasetExportService
 {
-    public function export(CarbonImmutable $from, CarbonImmutable $to, string $format, ?string $path = null): string
+    public function export(CarbonImmutable $from, CarbonImmutable $to, string $format, ?string $path = null, bool $includeSourceUrl = false): string
     {
         $format = strtolower($format);
         $path ??= 'exports/dataset-'.$from->format('Ymd').'-'.$to->format('Ymd').'.'.$format;
-        $rows = $this->rows($from, $to);
+        $rows = $this->rows($from, $to, $includeSourceUrl);
         $content = $format === 'jsonl' ? $this->toJsonl($rows) : $this->toCsv($rows);
 
         Storage::disk('local')->put($path, $content);
@@ -21,37 +21,63 @@ class DatasetExportService
     }
 
     /** @return array<int, array<string, mixed>> */
-    private function rows(CarbonImmutable $from, CarbonImmutable $to): array
+    private function rows(CarbonImmutable $from, CarbonImmutable $to, bool $includeSourceUrl): array
     {
         return CaseInstance::query()
             ->with(['court', 'courtCase', 'events', 'parties'])
+            ->whereHas('courtCase', fn ($query) => $query
+                ->where('dispute_status', 'resolved')
+                ->where('chain_status', '!=', 'transfer_pending')
+                ->whereDate('received_date', '>=', $from->toDateString())
+                ->whereDate('final_observed_date', '<=', $to->toDateString()))
+            ->where('dispute_status_normalized', 'resolved')
+            ->whereNotIn('result_normalized', ['transferred_by_jurisdiction'])
             ->whereNotNull('started_at')
             ->whereNotNull('completed_at')
-            ->whereDate('started_at', '>=', $from->toDateString())
-            ->whereDate('completed_at', '<=', $to->toDateString())
             ->orderBy('id')
             ->get()
-            ->map(function (CaseInstance $instance): array {
+            ->map(function (CaseInstance $instance) use ($includeSourceUrl): array {
                 $events = $instance->events->sortBy('event_order')->values();
                 $parties = $instance->parties;
-                $duration = $instance->started_at && $instance->completed_at
-                    ? $instance->started_at->diffInDays($instance->completed_at)
+                $logicalStartedAt = $instance->courtCase?->received_date ?? $instance->started_at;
+                $logicalCompletedAt = $instance->courtCase?->final_observed_date ?? $instance->completed_at;
+                $duration = $logicalStartedAt && $logicalCompletedAt
+                    ? $logicalStartedAt->diffInDays($logicalCompletedAt)
                     : null;
-
-                return [
+                $row = [
                     'case_id' => $instance->case_id,
                     'case_instance_id' => $instance->id,
                     'court_id' => $instance->court_id,
                     'region' => $instance->court?->region,
+                    'chain_status' => $instance->courtCase?->chain_status,
+                    'case_type' => $instance->case_type,
+                    'source_case_type_id' => $instance->source_case_type_id,
                     'instance_level' => $instance->instance_level,
+                    'court_instance_status' => $instance->court_instance_status_normalized,
+                    'dispute_status' => $instance->dispute_status_normalized,
+                    'disposition_type' => $instance->disposition_type,
                     'category_normalized' => $instance->category_normalized,
-                    'received_date' => $instance->started_at?->toDateString(),
-                    'completed_at' => $instance->completed_at?->toDateString(),
+                    'category_level_1' => $instance->category_level_1,
+                    'category_level_2' => $instance->category_level_2,
+                    'category_level_3' => $instance->category_level_3,
+                    'category_level_4' => $instance->category_level_4,
+                    'category_leaf' => $instance->category_leaf,
+                    'received_date' => $logicalStartedAt?->toDateString(),
+                    'completed_at' => $logicalCompletedAt?->toDateString(),
                     'result_normalized' => $instance->result_normalized,
                     'duration_days' => $duration,
                     'plaintiffs_count' => $parties->where('role', 'plaintiff')->count(),
                     'defendants_count' => $parties->where('role', 'defendant')->count(),
-                    'third_parties_count' => $parties->where('role', 'third_party')->count(),
+                    'applicants_count' => $parties->where('role', 'applicant')->count(),
+                    'representatives_count' => $parties->where('role', 'representative')->count(),
+                    'unknown_role_parties_count' => $parties->where('role', 'unknown')->count(),
+                    'claimant_group_parties_count' => $parties->where('role_group', 'claimant')->count(),
+                    'respondent_group_parties_count' => $parties->where('role_group', 'respondent')->count(),
+                    'public_participant_group_parties_count' => $parties->where('role_group', 'public_participant')->count(),
+                    'third_parties_count' => $parties->whereIn('role_group', ['third_party', 'independent_party', 'dependent_party'])->count(),
+                    'hidden_parties_count' => $parties->where('is_hidden', true)->count(),
+                    'has_hidden_party' => $parties->contains('is_hidden', true),
+                    'has_unknown_role_party' => $parties->contains('role', 'unknown'),
                     'has_individual_party' => $parties->contains('party_type', 'individual'),
                     'has_legal_entity_party' => $parties->contains('party_type', 'legal_entity'),
                     'has_government_party' => $parties->contains('party_type', 'government'),
@@ -64,6 +90,12 @@ class DatasetExportService
                     'has_cassation' => (bool) $instance->courtCase?->has_cassation,
                     'event_sequence' => $events->pluck('event_type_normalized')->implode('>'),
                 ];
+
+                if ($includeSourceUrl) {
+                    $row['source_url'] = $instance->source_url;
+                }
+
+                return $row;
             })
             ->all();
     }
@@ -94,8 +126,6 @@ class DatasetExportService
     {
         return collect($rows)
             ->map(fn (array $row): string => json_encode($row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES))
-            ->implode('
-').'
-';
+            ->implode("\n")."\n";
     }
 }

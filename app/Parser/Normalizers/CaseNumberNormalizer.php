@@ -15,7 +15,7 @@ class CaseNumberNormalizer
         }
 
         $value = preg_replace('/\s+/u', '', $value) ?? $value;
-        $value = str_replace(['№', 'N'], '', $value);
+        $value = str_replace(["\u{2116}", 'N'], '', $value);
 
         return mb_strtoupper($value);
     }

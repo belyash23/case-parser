@@ -14,7 +14,6 @@ final readonly class ParsedCaseEvent
         public string $eventTypeNormalized,
         public ?string $eventResultRaw,
         public ?string $eventResultNormalized,
-        public ?string $sourceUrl = null,
     ) {}
 
     public function fingerprint(): string

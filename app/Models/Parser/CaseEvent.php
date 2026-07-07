@@ -15,7 +15,6 @@ class CaseEvent extends Model
         'event_type_normalized',
         'event_result_raw',
         'event_result_normalized',
-        'source_url',
         'event_fingerprint',
     ];
 

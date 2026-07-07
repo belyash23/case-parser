@@ -8,7 +8,7 @@ use Illuminate\Console\Command;
 
 class DatasetExportCommand extends Command
 {
-    protected $signature = 'dataset:export {--from= : Start date YYYY-MM-DD} {--to= : End date YYYY-MM-DD} {--format=csv : csv or jsonl} {--path= : Storage path, default exports/dataset-{from}-{to}.{format}}';
+    protected $signature = 'dataset:export {--from= : Start date YYYY-MM-DD} {--to= : End date YYYY-MM-DD} {--format=csv : csv or jsonl} {--path= : Storage path, default exports/dataset-{from}-{to}.{format}} {--include-source-url : Include source case card URL in exported rows}';
 
     protected $description = 'Export parsed court cases dataset for ML experiments.';
 
@@ -31,7 +31,13 @@ class DatasetExportCommand extends Command
         }
 
         $pathOption = $this->option('path');
-        $path = $exportService->export($from, $to, $format, is_string($pathOption) && $pathOption !== '' ? $pathOption : null);
+        $path = $exportService->export(
+            from: $from,
+            to: $to,
+            format: $format,
+            path: is_string($pathOption) && $pathOption !== '' ? $pathOption : null,
+            includeSourceUrl: (bool) $this->option('include-source-url'),
+        );
         $this->info('Dataset exported to '.$path);
 
         return self::SUCCESS;

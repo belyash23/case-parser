@@ -117,35 +117,46 @@ class SudrfCourtAdapter implements CourtSourceAdapter
         $xpath = Html::xpath($html);
         $plainText = Html::normalizeText(strip_tags($html));
         $caseNumber = $this->extractCaseNumber($plainText);
+        $normalizedCaseNumberAliases = $this->normalizedCaseNumberAliases($plainText);
         $details = $this->extractDetails($xpath);
         $events = $this->extractEvents($xpath, $url);
         $documents = $this->extractDocuments($xpath, $url);
         $parties = $this->extractParties($xpath);
         $resultRaw = $details['result'] ?? $this->lastEventResult($events);
+        $resultNormalized = $this->resultNormalizer->normalize($resultRaw);
+        $isTransferred = $resultNormalized === 'transferred_by_jurisdiction' || $this->hasTransferEvent($events);
         $completedAt = $this->dateNormalizer->normalize($details['completed_at'] ?? null)
             ?? $this->inferCompletedAt($events);
         $receivedDate = $this->dateNormalizer->normalize($details['received_date'] ?? null);
         $categoryRaw = $details['category'] ?? null;
+        $categoryPath = $this->categoryNormalizer->path($categoryRaw);
 
         $parts = parse_url($url);
         parse_str($parts['query'] ?? '', $query);
+        $sourceCaseTypeId = isset($query['delo_id']) ? (string) $query['delo_id'] : null;
+        $courtInstanceStatus = $this->courtInstanceStatus($completedAt, $isTransferred);
 
         return new ParsedCaseInstance(
             sourceUrl: $url,
             caseNumber: $caseNumber,
             normalizedCaseNumber: $this->caseNumberNormalizer->normalize($caseNumber),
+            normalizedCaseNumberAliases: $normalizedCaseNumberAliases,
             caseUid: $query['case_uid'] ?? $details['uid'] ?? null,
             externalCaseId: $query['case_id'] ?? null,
-            proceedingType: $this->proceedingType($query['delo_id'] ?? null),
+            sourceCaseTypeId: $sourceCaseTypeId,
+            caseType: $this->caseType($sourceCaseTypeId),
             instanceLevel: 'first',
-            statusRaw: $completedAt !== null ? 'completed' : 'active',
-            statusNormalized: $completedAt !== null ? 'completed' : 'active',
+            courtInstanceStatusRaw: $resultRaw ?? $courtInstanceStatus,
+            courtInstanceStatusNormalized: $courtInstanceStatus,
+            disputeStatusNormalized: $this->disputeStatus($completedAt, $resultNormalized, $isTransferred),
+            dispositionType: $this->dispositionType($resultNormalized, $completedAt),
             resultRaw: $resultRaw,
-            resultNormalized: $this->resultNormalizer->normalize($resultRaw),
+            resultNormalized: $resultNormalized,
             receivedDate: $receivedDate,
             completedAt: $completedAt,
             categoryRaw: $categoryRaw,
             categoryNormalized: $this->categoryNormalizer->normalize($categoryRaw),
+            categoryPath: $categoryPath,
             events: $events,
             documents: $documents,
             parties: $parties,
@@ -156,33 +167,38 @@ class SudrfCourtAdapter implements CourtSourceAdapter
     private function extractDetails(DOMXPath $xpath): array
     {
         $details = [];
-        $fallbackKeys = ['uid', 'received_date', 'category', null, 'completed_at', 'result'];
-        $fallbackIndex = 0;
 
-        foreach ($xpath->query('//tr[count(td) >= 2]') as $row) {
-            if (! $row instanceof DOMElement) {
+        foreach ($xpath->query('//tr[count(td) = 2]') as $row) {
+            if (! $row instanceof DOMElement || $this->isWithinPartiesBlock($row)) {
                 continue;
             }
 
             $cells = $row->getElementsByTagName('td');
-            if ($cells->length >= 5 || $this->isWithinPartiesBlock($row)) {
-                continue;
-            }
-
+            $key = $this->normalizeDetailKey(Html::text($cells->item(0)));
             $value = Html::text($cells->item(1));
-            if ($value === '' || ! array_key_exists($fallbackIndex, $fallbackKeys)) {
+
+            if ($key === null || $value === '') {
                 continue;
             }
 
-            $fallbackKey = $fallbackKeys[$fallbackIndex];
-            if ($fallbackKey !== null) {
-                $details[$fallbackKey] = $value;
-            }
-
-            $fallbackIndex++;
+            $details[$key] = $value;
         }
 
         return $details;
+    }
+
+    private function normalizeDetailKey(string $label): ?string
+    {
+        $label = mb_strtolower(Html::normalizeText($label));
+
+        return match (true) {
+            $label === 'uid' || str_contains($label, "\u{0443}\u{043d}\u{0438}\u{043a}\u{0430}\u{043b}\u{044c}\u{043d}\u{044b}\u{0439} \u{0438}\u{0434}\u{0435}\u{043d}\u{0442}\u{0438}\u{0444}\u{0438}\u{043a}\u{0430}\u{0442}\u{043e}\u{0440}") => 'uid',
+            $label === 'received' || str_contains($label, "\u{0434}\u{0430}\u{0442}\u{0430} \u{043f}\u{043e}\u{0441}\u{0442}\u{0443}\u{043f}\u{043b}\u{0435}\u{043d}\u{0438}\u{044f}") => 'received_date',
+            $label === 'category' || str_contains($label, "\u{043a}\u{0430}\u{0442}\u{0435}\u{0433}\u{043e}\u{0440}\u{0438}\u{044f} \u{0434}\u{0435}\u{043b}\u{0430}") => 'category',
+            $label === 'completed' || str_contains($label, "\u{0434}\u{0430}\u{0442}\u{0430} \u{0440}\u{0430}\u{0441}\u{0441}\u{043c}\u{043e}\u{0442}\u{0440}\u{0435}\u{043d}\u{0438}\u{044f}") => 'completed_at',
+            $label === 'result' || str_contains($label, "\u{0440}\u{0435}\u{0437}\u{0443}\u{043b}\u{044c}\u{0442}\u{0430}\u{0442} \u{0440}\u{0430}\u{0441}\u{0441}\u{043c}\u{043e}\u{0442}\u{0440}\u{0435}\u{043d}\u{0438}\u{044f}") => 'result',
+            default => null,
+        };
     }
 
     /** @return array<int, ParsedCaseEvent> */
@@ -237,7 +253,6 @@ class SudrfCourtAdapter implements CourtSourceAdapter
                 eventTypeNormalized: $this->eventTypeNormalizer->normalize($eventName, $eventResult),
                 eventResultRaw: $eventResult !== '' ? $eventResult : null,
                 eventResultNormalized: $this->resultNormalizer->normalize($eventResult),
-                sourceUrl: $url,
             );
         }
 
@@ -274,7 +289,6 @@ class SudrfCourtAdapter implements CourtSourceAdapter
                 documentNumber: $this->extractDocumentNumber($text),
                 documentDate: $this->dateNormalizer->normalize($text),
                 documentKind: $this->normalizeDocumentKind($text.' '.$href),
-                sourceUrl: $url,
             );
         }
 
@@ -286,29 +300,65 @@ class SudrfCourtAdapter implements CourtSourceAdapter
     {
         $parties = [];
 
-        foreach ($xpath->query('//*[@id="cont3" or @id="tab3"]//tr[count(td) >= 2] | //tr[count(td) >= 2]') as $row) {
-            if (! $row instanceof DOMElement) {
-                continue;
+        foreach ($this->partyTables($xpath) as $table) {
+            foreach ($table->getElementsByTagName('tr') as $row) {
+                $cells = $row->getElementsByTagName('td');
+
+                if ($cells->length < 1) {
+                    continue;
+                }
+
+                $sourceRole = Html::text($cells->item(0));
+                $partyText = Html::text($cells->item(1));
+
+                if ($sourceRole === '' || $this->isPartyHeaderRole($sourceRole)) {
+                    continue;
+                }
+
+                $role = $this->normalizePartyRole($sourceRole);
+                $isHidden = $this->isHiddenParty($partyText);
+                $partyType = $isHidden ? 'unknown' : $this->classifyPartyType($partyText);
+
+                $parties[] = new ParsedCaseParty(
+                    role: $role['role'],
+                    roleGroup: $role['group'],
+                    partyType: $partyType,
+                    isHidden: $isHidden,
+                    sourceRole: $this->safeSourceRole($sourceRole),
+                    confidence: $isHidden ? 0 : $this->partyClassificationConfidence($partyText),
+                );
             }
-
-            $cells = $row->getElementsByTagName('td');
-            $sourceRole = Html::text($cells->item(0));
-            $partyText = Html::text($cells->item(1));
-            $role = $this->normalizePartyRole($sourceRole);
-
-            if ($role === null || $partyText === '') {
-                continue;
-            }
-
-            $parties[] = new ParsedCaseParty(
-                role: $role,
-                partyType: $this->classifyPartyType($partyText),
-                sourceRole: $this->safeSourceRole($sourceRole),
-                confidence: $this->partyClassificationConfidence($partyText),
-            );
         }
 
         return $parties;
+    }
+
+    /** @return array<int, DOMElement> */
+    private function partyTables(DOMXPath $xpath): array
+    {
+        $tables = [];
+
+        foreach ($xpath->query('//table') as $table) {
+            if (! $table instanceof DOMElement) {
+                continue;
+            }
+
+            $text = mb_strtolower(Html::normalizeText($table->textContent ?? ''));
+            if (str_contains($text, "\u{0432}\u{0438}\u{0434} \u{043b}\u{0438}\u{0446}\u{0430}, \u{0443}\u{0447}\u{0430}\u{0441}\u{0442}\u{0432}\u{0443}\u{044e}\u{0449}\u{0435}\u{0433}\u{043e} \u{0432} \u{0434}\u{0435}\u{043b}\u{0435}")
+                || str_contains($text, "\u{0444}\u{0430}\u{043c}\u{0438}\u{043b}\u{0438}\u{044f} / \u{043d}\u{0430}\u{0438}\u{043c}\u{0435}\u{043d}\u{043e}\u{0432}\u{0430}\u{043d}\u{0438}\u{0435}")) {
+                $tables[] = $table;
+            }
+        }
+
+        return $tables;
+    }
+
+    private function isPartyHeaderRole(string $sourceRole): bool
+    {
+        $role = mb_strtolower(Html::normalizeText($sourceRole));
+
+        return str_contains($role, "\u{0432}\u{0438}\u{0434} \u{043b}\u{0438}\u{0446}\u{0430}")
+            || str_contains($role, 'role');
     }
 
     private function isWithinPartiesBlock(DOMElement $node): bool
@@ -367,16 +417,38 @@ class SudrfCourtAdapter implements CourtSourceAdapter
         return null;
     }
 
-    private function normalizePartyRole(string $sourceRole): ?string
+    /** @return array{role:string, group:string} */
+    private function normalizePartyRole(string $sourceRole): array
     {
         $lower = mb_strtolower(Html::normalizeText($sourceRole));
 
         return match (true) {
-            $this->containsAny($lower, ['plaintiff', 'claimant', self::RU_PLAINTIFF, self::RU_CLAIMANT]) => 'plaintiff',
-            $this->containsAny($lower, ['defendant', self::RU_DEFENDANT]) => 'defendant',
-            $this->containsAny($lower, ['third', self::RU_THIRD, self::RU_INTERESTED]) => 'third_party',
-            default => null,
+            str_contains($lower, "\u{0442}\u{0440}\u{0435}\u{0442}\u{044c}\u{0435} \u{043b}\u{0438}\u{0446}\u{043e}")
+                && str_contains($lower, "\u{043d}\u{0435} \u{0437}\u{0430}\u{044f}\u{0432}\u{043b}") => ['role' => 'third_party_without_claims', 'group' => 'dependent_party'],
+            str_contains($lower, "\u{0442}\u{0440}\u{0435}\u{0442}\u{044c}\u{0435} \u{043b}\u{0438}\u{0446}\u{043e}")
+                && str_contains($lower, "\u{0441}\u{0430}\u{043c}\u{043e}\u{0441}\u{0442}\u{043e}\u{044f}\u{0442}\u{0435}\u{043b}\u{044c}\u{043d}") => ['role' => 'third_party_with_claims', 'group' => 'independent_party'],
+            $this->containsAny($lower, ['plaintiff', self::RU_PLAINTIFF]) => ['role' => 'plaintiff', 'group' => 'claimant'],
+            $this->containsAny($lower, ['applicant', self::RU_CLAIMANT]) => ['role' => 'applicant', 'group' => 'claimant'],
+            $this->containsAny($lower, ['defendant', self::RU_DEFENDANT]) => ['role' => 'defendant', 'group' => 'respondent'],
+            str_contains($lower, "\u{0437}\u{0430}\u{0438}\u{043d}\u{0442}\u{0435}\u{0440}\u{0435}\u{0441}\u{043e}\u{0432}\u{0430}\u{043d}\u{043d}\u{043e}\u{0435} \u{043b}\u{0438}\u{0446}\u{043e}") => ['role' => 'interested_party', 'group' => 'affected_party'],
+            str_contains($lower, "\u{0442}\u{0440}\u{0435}\u{0442}\u{044c}\u{0435} \u{043b}\u{0438}\u{0446}\u{043e}") || str_contains($lower, 'third') => ['role' => 'third_party', 'group' => 'third_party'],
+            str_contains($lower, "\u{043f}\u{0440}\u{0435}\u{0434}\u{0441}\u{0442}\u{0430}\u{0432}\u{0438}\u{0442}\u{0435}\u{043b}\u{044c}") => ['role' => 'representative', 'group' => 'representative'],
+            str_contains($lower, "\u{043f}\u{0440}\u{043e}\u{043a}\u{0443}\u{0440}\u{043e}\u{0440}") => ['role' => 'prosecutor', 'group' => 'public_participant'],
+            str_contains($lower, "\u{043e}\u{0440}\u{0433}\u{0430}\u{043d} \u{043e}\u{043f}\u{0435}\u{043a}\u{0438}") => ['role' => 'guardianship_authority', 'group' => 'government_authority'],
+            str_contains($lower, "\u{0432}\u{0437}\u{044b}\u{0441}\u{043a}\u{0430}\u{0442}\u{0435}\u{043b}\u{044c}") => ['role' => 'claimant_in_order_proceeding', 'group' => 'order_proceeding'],
+            str_contains($lower, "\u{0434}\u{043e}\u{043b}\u{0436}\u{043d}\u{0438}\u{043a}") => ['role' => 'debtor', 'group' => 'respondent'],
+            default => ['role' => 'unknown', 'group' => 'unknown'],
         };
+    }
+
+    private function isHiddenParty(string $partyText): bool
+    {
+        $lower = mb_strtolower(Html::normalizeText($partyText));
+
+        return $lower === ''
+            || str_contains($lower, "\u{0441}\u{043a}\u{0440}\u{044b}\u{0442}")
+            || str_contains($lower, "\u{043f}\u{0435}\u{0440}\u{0441}\u{043e}\u{043d}\u{0430}\u{043b}\u{044c}\u{043d}\u{044b}\u{0435} \u{0434}\u{0430}\u{043d}\u{043d}\u{044b}\u{0435}")
+            || str_contains($lower, "\u{0434}\u{0430}\u{043d}\u{043d}\u{044b}\u{0435} \u{0438}\u{0437}\u{044a}\u{044f}\u{0442}\u{044b}");
     }
 
     private function classifyPartyType(string $partyText): string
@@ -417,15 +489,30 @@ class SudrfCourtAdapter implements CourtSourceAdapter
 
     private function extractCaseNumber(string $plainText): ?string
     {
-        if (preg_match('/\b([0-9]{1,4}-[0-9A-Za-z.\-\/]+\/[0-9]{4})\b/u', $plainText, $matches) === 1) {
-            return Html::normalizeText($matches[1]);
-        }
+        return $this->extractCaseNumbers($plainText)[0] ?? null;
+    }
 
-        if (preg_match('/\bN\s*([0-9]{1,4}-[0-9A-Za-z.\-\/]+\/[0-9]{4})\b/u', $plainText, $matches) === 1) {
-            return Html::normalizeText($matches[1]);
-        }
+    /** @return array<int, string> */
+    private function extractCaseNumbers(string $plainText): array
+    {
+        preg_match_all('/(?:\b|[\x{2116}N]\s*)((?:[0-9]{1,4}-[0-9\p{L}.\-\/]+|[\p{L}]{1,3}-?[0-9]{1,6})\/[0-9]{4})\b/u', $plainText, $matches);
+        return collect($matches[1] ?? [])
+            ->map(fn (string $number): string => Html::normalizeText($number))
+            ->filter(fn (string $number): bool => $number !== '')
+            ->unique()
+            ->values()
+            ->all();
+    }
 
-        return null;
+    /** @return array<int, string> */
+    private function normalizedCaseNumberAliases(string $plainText): array
+    {
+        return collect($this->extractCaseNumbers($plainText))
+            ->map(fn (string $number): ?string => $this->caseNumberNormalizer->normalize($number))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
     }
 
     /** @param array<int, ParsedCaseEvent> $events */
@@ -444,7 +531,7 @@ class SudrfCourtAdapter implements CourtSourceAdapter
     private function inferCompletedAt(array $events): ?CarbonImmutable
     {
         for ($i = count($events) - 1; $i >= 0; $i--) {
-            if (in_array($events[$i]->eventTypeNormalized, ['decision_issued', 'returned'], true)) {
+            if (in_array($events[$i]->eventTypeNormalized, ['decision_issued', 'returned', 'case_transferred_to_another_court'], true)) {
                 return $events[$i]->eventDate;
             }
         }
@@ -452,10 +539,57 @@ class SudrfCourtAdapter implements CourtSourceAdapter
         return null;
     }
 
-    private function proceedingType(?string $caseTypeId): ?string
+    /** @param array<int, ParsedCaseEvent> $events */
+    private function hasTransferEvent(array $events): bool
+    {
+        foreach ($events as $event) {
+            if ($event->eventTypeNormalized === 'case_transferred_to_another_court'
+                || $event->eventResultNormalized === 'transferred_by_jurisdiction') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function courtInstanceStatus(?CarbonImmutable $completedAt, bool $isTransferred): string
+    {
+        if ($isTransferred) {
+            return 'transferred';
+        }
+
+        return $completedAt !== null ? 'closed' : 'active';
+    }
+
+    private function disputeStatus(?CarbonImmutable $completedAt, ?string $resultNormalized, bool $isTransferred): string
+    {
+        if ($isTransferred) {
+            return 'transferred';
+        }
+
+        if ($completedAt === null) {
+            return 'active';
+        }
+
+        return match ($resultNormalized) {
+            'scheduled', 'postponed', null => 'active',
+            default => 'resolved',
+        };
+    }
+
+    private function dispositionType(?string $resultNormalized, ?CarbonImmutable $completedAt): ?string
+    {
+        if ($resultNormalized === null) {
+            return $completedAt !== null ? 'unknown_closed' : null;
+        }
+
+        return $resultNormalized;
+    }
+
+    private function caseType(?string $caseTypeId): ?string
     {
         return match ((string) $caseTypeId) {
-            self::CIVIL_FIRST_CASE_TYPE_ID => 'civil_first',
+            self::CIVIL_FIRST_CASE_TYPE_ID => 'civil',
             default => $caseTypeId !== null ? 'sudrf_'.$caseTypeId : null,
         };
     }

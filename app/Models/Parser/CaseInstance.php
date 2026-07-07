@@ -16,24 +16,37 @@ class CaseInstance extends Model
         'source_url',
         'source_url_hash',
         'external_case_number',
+        'normalized_case_number_aliases_json',
         'case_uid',
         'external_case_id',
+        'source_case_type_id',
+        'case_type',
         'instance_level',
-        'status_raw',
-        'status_normalized',
+        'court_instance_status_raw',
+        'court_instance_status_normalized',
+        'dispute_status_normalized',
+        'disposition_type',
         'result_raw',
         'result_normalized',
         'started_at',
         'completed_at',
         'category_raw',
         'category_normalized',
+        'category_path_json',
+        'category_level_1',
+        'category_level_2',
+        'category_level_3',
+        'category_level_4',
+        'category_leaf',
     ];
 
     protected function casts(): array
     {
         return [
+            'normalized_case_number_aliases_json' => 'array',
             'started_at' => 'date',
             'completed_at' => 'date',
+            'category_path_json' => 'array',
         ];
     }
 
@@ -65,5 +78,15 @@ class CaseInstance extends Model
     public function parties(): HasMany
     {
         return $this->hasMany(CaseParty::class);
+    }
+
+    public function outgoingChainLinks(): HasMany
+    {
+        return $this->hasMany(CaseChainLink::class, 'source_instance_id');
+    }
+
+    public function incomingChainLinks(): HasMany
+    {
+        return $this->hasMany(CaseChainLink::class, 'target_instance_id');
     }
 }
