@@ -45,4 +45,11 @@ final readonly class ParsedCaseInstance
             || $this->dispositionType === 'transferred_by_jurisdiction'
             || $this->courtInstanceStatusNormalized === 'transferred';
     }
+
+    public function isJoinedToAnotherCase(): bool
+    {
+        return $this->resultNormalized === 'joined_to_another_case'
+            || $this->dispositionType === 'joined_to_another_case'
+            || $this->disputeStatusNormalized === 'merged';
+    }
 }

@@ -20,3 +20,19 @@ services:
       - "${APP_HTTP_BIND:-127.0.0.1:18080}:8000"
     volumes:
       - .:/var/www/html
+  scheduler:
+    image: case-parser-app:latest
+    container_name: case-parser-scheduler
+    restart: unless-stopped
+    working_dir: /var/www/html
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    command: ["php", "artisan", "schedule:work", "--no-interaction"]
+    env_file:
+      - .env
+    environment:
+      COMPOSER_HOME: /tmp/composer
+      npm_config_cache: /tmp/npm
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - .:/var/www/html

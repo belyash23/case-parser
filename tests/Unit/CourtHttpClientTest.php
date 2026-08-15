@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Parser\Fetcher\CourtHttpClient;
 use PHPUnit\Framework\TestCase;
+use ReflectionClass;
 use ReflectionMethod;
 
 class CourtHttpClientTest extends TestCase
@@ -26,6 +27,8 @@ class CourtHttpClientTest extends TestCase
     {
         $method = new ReflectionMethod(CourtHttpClient::class, 'decodeBody');
 
-        return $method->invoke(new CourtHttpClient, $body, $contentType);
+        $client = (new ReflectionClass(CourtHttpClient::class))->newInstanceWithoutConstructor();
+
+        return $method->invoke($client, $body, $contentType);
     }
 }

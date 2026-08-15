@@ -165,6 +165,33 @@ HTML;
         $this->assertSame('transferred_by_jurisdiction', $parsed->events[1]->eventResultNormalized);
     }
 
+    public function test_it_marks_joined_case_as_merged_dispute(): void
+    {
+        $result = "\u{0414}\u{0435}\u{043b}\u{043e} \u{043f}\u{0440}\u{0438}\u{0441}\u{043e}\u{0435}\u{0434}\u{0438}\u{043d}\u{0435}\u{043d}\u{043e} \u{043a} \u{0434}\u{0440}\u{0443}\u{0433}\u{043e}\u{043c}\u{0443} \u{0434}\u{0435}\u{043b}\u{0443}";
+        $html = <<<HTML
+<!doctype html>
+<html><body>
+<div>Case N 2-1324/2025</div>
+<table>
+<tr><td>uid</td><td>joined-uid</td></tr>
+<tr><td>received</td><td>10.01.2025</td></tr>
+<tr><td>completed</td><td>20.02.2025</td></tr>
+<tr><td>result</td><td>{$result}</td></tr>
+</table>
+</body></html>
+HTML;
+
+        $parsed = $this->adapter()->parseCaseCard(
+            $html,
+            'https://example.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=1324&case_uid=joined-uid&delo_id=1540005',
+        );
+
+        $this->assertSame('closed', $parsed->courtInstanceStatusNormalized);
+        $this->assertSame('merged', $parsed->disputeStatusNormalized);
+        $this->assertSame('joined_to_another_case', $parsed->resultNormalized);
+        $this->assertSame('joined_to_another_case', $parsed->dispositionType);
+    }
+
     public function test_it_keeps_postponed_case_active_when_final_result_is_absent(): void
     {
         $adapter = $this->adapter();

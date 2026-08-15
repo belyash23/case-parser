@@ -35,4 +35,11 @@ class ParserNormalizersTest extends TestCase
         $this->assertSame('hearing_postponed', (new EventTypeNormalizer)->normalize('Судебное заседание', 'Отложено'));
         $this->assertSame('partially_satisfied', (new ResultNormalizer)->normalize('Иск удовлетворен частично'));
     }
+
+    public function test_result_normalizer_identifies_case_joined_to_another_case(): void
+    {
+        $result = "\u{0414}\u{0435}\u{043b}\u{043e} \u{043f}\u{0440}\u{0438}\u{0441}\u{043e}\u{0435}\u{0434}\u{0438}\u{043d}\u{0435}\u{043d}\u{043e} \u{043a} \u{0434}\u{0440}\u{0443}\u{0433}\u{043e}\u{043c}\u{0443} \u{0434}\u{0435}\u{043b}\u{0443}";
+
+        $this->assertSame('joined_to_another_case', (new ResultNormalizer)->normalize($result));
+    }
 }

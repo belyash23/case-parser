@@ -72,7 +72,7 @@ run_app php artisan storage:link --force || true
 
 if [[ "${FRESH_DB}" -eq 1 ]]; then
     log "Refreshing database from scratch (--fresh-db)"
-    run_app php artisan migrate:fresh --force --no-interaction
+    run_app env APP_ENV=local php artisan migrate:fresh --force --no-interaction
 else
     log "Running migrations"
     run_app php artisan migrate --force --no-interaction
@@ -85,7 +85,7 @@ log "Caching production config"
 run_app php artisan optimize:clear
 run_app php artisan optimize
 
-log "Restarting application container"
-docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --force-recreate "${SERVICE}"
+log "Restarting application and scheduler containers"
+docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --force-recreate "${SERVICE}" scheduler
 
 docker compose -f "${COMPOSE_FILE}" ps

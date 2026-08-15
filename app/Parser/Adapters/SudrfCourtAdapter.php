@@ -573,6 +573,7 @@ class SudrfCourtAdapter implements CourtSourceAdapter
 
         return match ($resultNormalized) {
             'scheduled', 'postponed', null => 'active',
+            'joined_to_another_case' => 'merged',
             default => 'resolved',
         };
     }

@@ -7,6 +7,7 @@ use App\Models\Parser\ParserError;
 use App\Models\Parser\ParserRun;
 use App\Models\Parser\RequestLog;
 use App\Parser\DTO\FetchResponse;
+use App\Parser\Services\AvailabilityCheckRecorder;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -14,6 +15,10 @@ use Throwable;
 
 class CourtHttpClient
 {
+    public function __construct(
+        private readonly AvailabilityCheckRecorder $availabilityRecorder,
+    ) {}
+
     public function fetch(Court $court, string $url, ?ParserRun $run = null): FetchResponse
     {
         $this->respectCourtInterval($court, (int) $court->min_request_interval_ms);
@@ -44,7 +49,7 @@ class CourtHttpClient
                 $body = $this->decodeBody($rawBody, $response->header('Content-Type'));
                 $status = $response->status();
 
-                $this->logRequest($court, $url, $run, $status, $durationMs, strlen($rawBody), $attempt - 1);
+                $requestLog = $this->logRequest($court, $url, $run, $status, $durationMs, strlen($rawBody), $attempt - 1);
 
                 if ($run !== null) {
                     $run->increment('total_requests');
@@ -53,6 +58,7 @@ class CourtHttpClient
 
                 if ($status >= 400) {
                     $this->recordParserError($court, $url, $run, 'HTTP_'.$status, 'HTTP status '.$status);
+                    $this->availabilityRecorder->fromRequestLog($requestLog);
                 }
 
                 return new FetchResponse($url, $status, $body, hash('sha256', $rawBody), $durationMs, strlen($rawBody), $attempt - 1);
@@ -72,7 +78,8 @@ class CourtHttpClient
         $message = $lastError?->getMessage() ?? 'Unknown fetch error';
         $type = str_contains(mb_strtolower($message), 'timeout') ? 'TIMEOUT' : 'NETWORK_ERROR';
 
-        $this->logRequest($court, $url, $run, null, $durationMs, null, max(0, $attempt - 1), $type, $message);
+        $requestLog = $this->logRequest($court, $url, $run, null, $durationMs, null, max(0, $attempt - 1), $type, $message);
+        $this->availabilityRecorder->fromRequestLog($requestLog);
         $this->recordParserError($court, $url, $run, $type, $message, $lastError?->getTraceAsString());
 
         if ($run !== null) {
@@ -113,9 +120,9 @@ class CourtHttpClient
         return mb_convert_encoding($body, 'UTF-8', 'Windows-1251');
     }
 
-    private function logRequest(Court $court, string $url, ?ParserRun $run, ?int $statusCode, ?int $durationMs, ?int $responseSizeBytes, int $retryCount, ?string $errorType = null, ?string $errorMessage = null): void
+    private function logRequest(Court $court, string $url, ?ParserRun $run, ?int $statusCode, ?int $durationMs, ?int $responseSizeBytes, int $retryCount, ?string $errorType = null, ?string $errorMessage = null): RequestLog
     {
-        RequestLog::query()->create([
+        return RequestLog::query()->create([
             'parser_run_id' => $run?->id,
             'court_id' => $court->id,
             'url' => $url,

@@ -19,13 +19,15 @@ class CaseUpsertService
 {
     private const TRANSFER_LINK_TYPE = 'transferred_by_jurisdiction';
 
+    private const JOINED_LINK_TYPE = 'joined_to_another_case';
+
     private const TRANSFER_MATCH_THRESHOLD = 90;
 
     public function upsert(Court $court, ParsedCaseInstance $parsed, ?CarbonImmutable $windowFrom = null, ?CarbonImmutable $windowTo = null, bool $persistOutOfWindow = false, ?RawPage $rawPage = null): UpsertResult
     {
         $trainingCandidate = $this->isTrainingCandidate($parsed, $windowFrom, $windowTo);
 
-        if (! $trainingCandidate && ! $persistOutOfWindow && ! $parsed->isTransferred()) {
+        if (! $trainingCandidate && ! $persistOutOfWindow && ! $parsed->isTransferred() && ! $parsed->isJoinedToAnotherCase()) {
             return new UpsertResult(false, false, false, 0);
         }
 
@@ -54,7 +56,11 @@ class CaseUpsertService
             'case_type' => $parsed->caseType,
             'dispute_status' => $parsed->disputeStatusNormalized ?? 'unknown',
             'final_disposition_type' => $parsed->dispositionType,
-            'chain_status' => $parsed->isTransferred() ? 'transfer_pending' : 'single_court',
+            'chain_status' => match (true) {
+                $parsed->isTransferred() => 'transfer_pending',
+                $parsed->isJoinedToAnotherCase() => 'merge_pending',
+                default => 'single_court',
+            },
             'received_date' => $parsed->receivedDate?->toDateString(),
             'final_observed_date' => $parsed->completedAt?->toDateString() ?? $this->lastObservedDate($parsed)?->toDateString(),
             'observation_window_from' => $windowFrom?->toDateString(),
@@ -141,6 +147,10 @@ class CaseUpsertService
             $this->rememberTransferLink($instance, $parsed);
         }
 
+        if ($parsed->isJoinedToAnotherCase()) {
+            $this->rememberJoinedLink($instance, $parsed);
+        }
+
         $this->resolvePendingTransfersAgainst($instance);
 
         if ($parsed->isTransferred()) {
@@ -173,7 +183,7 @@ class CaseUpsertService
             return false;
         }
 
-        if ($parsed->isTransferred()) {
+        if ($parsed->isTransferred() || $parsed->isJoinedToAnotherCase()) {
             return false;
         }
 
@@ -269,6 +279,33 @@ class CaseUpsertService
                     ->filter()
                     ->values()
                     ->all(),
+            ],
+        ])->save();
+    }
+
+    private function rememberJoinedLink(CaseInstance $instance, ParsedCaseInstance $parsed): void
+    {
+        $link = CaseChainLink::query()
+            ->where('source_instance_id', $instance->id)
+            ->whereNull('target_instance_id')
+            ->where('link_type', self::JOINED_LINK_TYPE)
+            ->firstOrNew([
+                'source_instance_id' => $instance->id,
+                'target_instance_id' => null,
+                'link_type' => self::JOINED_LINK_TYPE,
+            ]);
+
+        $link->fill([
+            'status' => 'pending',
+            'matched_by' => null,
+            'confidence' => 1,
+            'evidence_json' => [
+                'source_url' => $parsed->sourceUrl,
+                'case_uid' => $parsed->caseUid,
+                'external_case_id' => $parsed->externalCaseId,
+                'case_number' => $parsed->caseNumber,
+                'result_raw' => $parsed->resultRaw,
+                'result_normalized' => $parsed->resultNormalized,
             ],
         ])->save();
     }
@@ -458,6 +495,12 @@ class CaseUpsertService
             ->where('status', 'pending')
             ->whereNull('target_instance_id')
             ->isNotEmpty());
+        $hasJoinedCase = $instances->contains(fn (CaseInstance $instance): bool => $instance->result_normalized === self::JOINED_LINK_TYPE);
+        $hasPendingJoin = $instances->contains(fn (CaseInstance $instance): bool => $instance->outgoingChainLinks
+            ->where('link_type', self::JOINED_LINK_TYPE)
+            ->where('status', 'pending')
+            ->whereNull('target_instance_id')
+            ->isNotEmpty());
         $finalInstance = $instances
             ->sortByDesc(fn (CaseInstance $instance): string => $instance->completed_at?->toDateString() ?? $instance->started_at?->toDateString() ?? '')
             ->first();
@@ -472,19 +515,26 @@ class CaseUpsertService
             ->sortBy(fn (CarbonInterface $date): string => $date->toDateString())
             ->last();
         $chainStatus = match (true) {
+            $hasPendingJoin => 'merge_pending',
             $hasPendingTransfer => 'transfer_pending',
-            $hasTransfer => 'chain_complete',
+            $hasTransfer || $hasJoinedCase => 'chain_complete',
             default => 'single_court',
         };
-        $disputeStatus = $hasPendingTransfer
-            ? 'transferred'
-            : ($finalInstance?->dispute_status_normalized ?? 'unknown');
+        $disputeStatus = match (true) {
+            $hasPendingJoin => 'merged',
+            $hasPendingTransfer => 'transferred',
+            default => $finalInstance?->dispute_status_normalized ?? 'unknown',
+        };
         $isTrainingCandidate = $this->isCaseTrainingCandidate($case, $receivedDate, $finalObservedDate, $disputeStatus, $chainStatus);
 
         $case->forceFill([
             'chain_status' => $chainStatus,
             'dispute_status' => $disputeStatus,
-            'final_disposition_type' => $hasPendingTransfer ? self::TRANSFER_LINK_TYPE : $finalInstance?->disposition_type,
+            'final_disposition_type' => match (true) {
+                $hasPendingJoin => self::JOINED_LINK_TYPE,
+                $hasPendingTransfer => self::TRANSFER_LINK_TYPE,
+                default => $finalInstance?->disposition_type,
+            },
             'received_date' => $receivedDate?->toDateString(),
             'final_observed_date' => $finalObservedDate?->toDateString(),
             'is_training_candidate' => $isTrainingCandidate,
@@ -493,7 +543,7 @@ class CaseUpsertService
 
     private function isCaseTrainingCandidate(CourtCase $case, ?CarbonInterface $receivedDate, ?CarbonInterface $finalObservedDate, string $disputeStatus, string $chainStatus): bool
     {
-        if ($disputeStatus !== 'resolved' || $chainStatus === 'transfer_pending') {
+        if ($disputeStatus !== 'resolved' || in_array($chainStatus, ['transfer_pending', 'merge_pending'], true)) {
             return false;
         }
 
