@@ -2,12 +2,16 @@
 
 namespace App\Parser\Fetcher;
 
+use App\Admin\Services\ParserSettings;
 use App\Models\Parser\Court;
 use App\Models\Parser\ParserError;
 use App\Models\Parser\ParserRun;
 use App\Models\Parser\RequestLog;
 use App\Parser\DTO\FetchResponse;
+use App\Parser\Exceptions\SourceCircuitOpenException;
 use App\Parser\Services\AvailabilityCheckRecorder;
+use App\Parser\Services\AvailabilityOutcomeClassifier;
+use App\Parser\Services\SudrfSourceGuard;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -17,19 +21,24 @@ class CourtHttpClient
 {
     public function __construct(
         private readonly AvailabilityCheckRecorder $availabilityRecorder,
+        private readonly AvailabilityOutcomeClassifier $outcomeClassifier,
+        private readonly SudrfSourceGuard $sourceGuard,
+        private readonly ParserSettings $settings,
     ) {}
 
     public function fetch(Court $court, string $url, ?ParserRun $run = null): FetchResponse
     {
-        $this->respectCourtInterval($court, (int) $court->min_request_interval_ms);
-
         $maxAttempts = 1 + (int) $court->retry_count;
         $timeoutSeconds = max(1, (int) ceil(((int) $court->timeout_ms) / 1000));
-        $backoffMs = (int) $court->min_request_interval_ms;
+        $connectTimeoutSeconds = min(
+            $timeoutSeconds,
+            max(1, $this->settings->current()->connect_timeout_seconds),
+        );
         $attempt = 0;
         $lastError = null;
 
         while ($attempt < $maxAttempts) {
+            $this->sourceGuard->reserveRequestSlot();
             $attempt++;
             $started = hrtime(true);
 
@@ -37,7 +46,9 @@ class CourtHttpClient
                 $request = Http::withHeaders([
                     'User-Agent' => config('parser.user_agent'),
                     'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                ])->timeout($timeoutSeconds);
+                ])
+                    ->connectTimeout($connectTimeoutSeconds)
+                    ->timeout($timeoutSeconds);
 
                 if (! (bool) config('parser.verify_tls', false)) {
                     $request = $request->withoutVerifying();
@@ -48,6 +59,11 @@ class CourtHttpClient
                 $rawBody = $response->body();
                 $body = $this->decodeBody($rawBody, $response->header('Content-Type'));
                 $status = $response->status();
+
+                $this->sourceGuard->recordHttpResponse(
+                    $status,
+                    $this->outcomeClassifier->retryAfterSeconds($response->header('Retry-After')),
+                );
 
                 $requestLog = $this->logRequest($court, $url, $run, $status, $durationMs, strlen($rawBody), $attempt - 1);
 
@@ -62,46 +78,49 @@ class CourtHttpClient
                 }
 
                 return new FetchResponse($url, $status, $body, hash('sha256', $rawBody), $durationMs, strlen($rawBody), $attempt - 1);
+            } catch (SourceCircuitOpenException $exception) {
+                throw $exception;
             } catch (ConnectionException $exception) {
                 $lastError = $exception;
+                $this->rememberFailedAttempt($court, $url, $run, $attempt, $started, $exception);
             } catch (Throwable $exception) {
-                $lastError = $exception;
-            }
-
-            if ($attempt < $maxAttempts) {
-                usleep($backoffMs * 1000);
-                $backoffMs = (int) round($backoffMs * (float) $court->backoff_multiplier);
+                throw $exception;
             }
         }
 
-        $durationMs = isset($started) ? (int) round((hrtime(true) - $started) / 1000000) : null;
         $message = $lastError?->getMessage() ?? 'Unknown fetch error';
-        $type = str_contains(mb_strtolower($message), 'timeout') ? 'TIMEOUT' : 'NETWORK_ERROR';
-
-        $requestLog = $this->logRequest($court, $url, $run, null, $durationMs, null, max(0, $attempt - 1), $type, $message);
-        $this->availabilityRecorder->fromRequestLog($requestLog);
+        $type = $this->isTimeoutMessage($message) ? 'TIMEOUT' : 'NETWORK_ERROR';
         $this->recordParserError($court, $url, $run, $type, $message, $lastError?->getTraceAsString());
 
         if ($run !== null) {
-            $run->increment('total_requests');
-            $run->increment('failed_requests');
             $run->increment('error_count');
         }
 
         throw $lastError ?? new RuntimeException($message);
     }
 
-    private function respectCourtInterval(Court $court, int $intervalMs): void
+    private function rememberFailedAttempt(Court $court, string $url, ?ParserRun $run, int $attempt, int $started, Throwable $exception): void
     {
-        $last = RequestLog::query()->where('court_id', $court->id)->latest('id')->first();
+        $isTimeout = $this->isTimeout($exception);
+        $type = $isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR';
+        $durationMs = (int) round((hrtime(true) - $started) / 1000000);
+        $this->sourceGuard->recordConnectionFailure($isTimeout);
+        $requestLog = $this->logRequest(
+            $court,
+            $url,
+            $run,
+            null,
+            $durationMs,
+            null,
+            $attempt - 1,
+            $type,
+            $exception->getMessage(),
+        );
+        $this->availabilityRecorder->fromRequestLog($requestLog);
 
-        if ($last === null || $intervalMs <= 0) {
-            return;
-        }
-
-        $elapsedMs = (int) $last->created_at->diffInMilliseconds(now());
-        if ($elapsedMs < $intervalMs) {
-            usleep(($intervalMs - $elapsedMs) * 1000);
+        if ($run !== null) {
+            $run->increment('total_requests');
+            $run->increment('failed_requests');
         }
     }
 
@@ -118,6 +137,19 @@ class CourtHttpClient
         }
 
         return mb_convert_encoding($body, 'UTF-8', 'Windows-1251');
+    }
+
+    private function isTimeout(Throwable $exception): bool
+    {
+        return str_contains(
+            $this->outcomeClassifier->fromError($exception::class, $exception->getMessage()),
+            'timeout',
+        );
+    }
+
+    private function isTimeoutMessage(string $message): bool
+    {
+        return str_contains($this->outcomeClassifier->fromError(null, $message), 'timeout');
     }
 
     private function logRequest(Court $court, string $url, ?ParserRun $run, ?int $statusCode, ?int $durationMs, ?int $responseSizeBytes, int $retryCount, ?string $errorType = null, ?string $errorMessage = null): RequestLog

@@ -7,7 +7,7 @@ use Illuminate\Console\Command;
 
 class ParserSyncCourtsCommand extends Command
 {
-    protected $signature = 'parser:sync-courts {region_id=18 : SUDRF court_subj region identifier} {--region=Udmurt Republic : Region name to store on courts} {--city= : Optional city label to store on synced courts} {--dry-run : Parse and print courts without writing to the database}';
+    protected $signature = 'parser:sync-courts {region_id=18 : SUDRF court_subj region identifier} {--region= : Optional region name override to store on courts} {--city= : Optional city label to store on synced courts} {--dry-run : Parse and print courts without writing to the database}';
 
     protected $description = 'Sync court directory entries from sudrf.ru by region.';
 

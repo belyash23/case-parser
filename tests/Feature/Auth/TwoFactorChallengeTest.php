@@ -35,8 +35,8 @@ class TwoFactorChallengeTest extends TestCase
 
         $user = User::factory()->withTwoFactor()->create();
 
-        $this->post(route('login'), [
-            'email' => $user->email,
+        $this->post(route('login.store'), [
+            'login' => $user->login,
             'password' => 'password',
         ]);
 

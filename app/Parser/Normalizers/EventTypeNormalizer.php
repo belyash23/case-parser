@@ -6,7 +6,7 @@ use App\Parser\Support\Html;
 
 class EventTypeNormalizer
 {
-    private const RU_REGISTERED = "\u{0437}\u{0430}\u{0440}\u{0435}\u{0433}\u{0438}\u{0441}\u{0442}\u{0440}";
+    private const RU_REGISTERED = "\u{0440}\u{0435}\u{0433}\u{0438}\u{0441}\u{0442}\u{0440}";
 
     private const RU_ACCEPTED_TO_PROCEEDING = "\u{043f}\u{0440}\u{0438}\u{043d}\u{044f}\u{0442}\u{043e} \u{043a} \u{043f}\u{0440}\u{043e}\u{0438}\u{0437}\u{0432}\u{043e}\u{0434}\u{0441}\u{0442}\u{0432}\u{0443}";
 

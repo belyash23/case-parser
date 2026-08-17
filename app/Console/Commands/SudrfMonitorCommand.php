@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Admin\Services\ParserSettings;
 use App\Models\Parser\AvailabilityCheck;
 use App\Models\Parser\Court;
 use App\Parser\Services\AvailabilityMonitorService;
@@ -11,14 +12,25 @@ class SudrfMonitorCommand extends Command
 {
     protected $signature = 'monitor:sudrf
         {--court=* : Limit monitoring to the specified court IDs}
+        {--scheduled : Skip the run until the configured interval is due}
         {--force : Run even when monitoring is disabled in configuration}';
 
     protected $description = 'Record SUDRF availability, reusing recent parser requests when possible.';
 
-    public function handle(AvailabilityMonitorService $monitor): int
+    public function handle(AvailabilityMonitorService $monitor, ParserSettings $settings): int
     {
-        if (! (bool) config('monitoring.sudrf.enabled') && ! $this->option('force')) {
-            $this->info('SUDRF monitoring is disabled. Set SUDRF_MONITORING_ENABLED=true or pass --force.');
+        $parserSettings = $settings->current();
+
+        if (! $parserSettings->monitoring_enabled && ! $this->option('force')) {
+            $this->info('SUDRF monitoring is disabled. Enable it in the admin settings or pass --force.');
+
+            return self::SUCCESS;
+        }
+
+        if ((bool) $this->option('scheduled') && AvailabilityCheck::query()
+            ->where('checked_at', '>=', now()->subMinutes(max(1, $parserSettings->monitor_interval_minutes)))
+            ->exists()) {
+            $this->line('SUDRF monitoring interval is not due yet.');
 
             return self::SUCCESS;
         }
@@ -51,7 +63,14 @@ class SudrfMonitorCommand extends Command
         }
 
         foreach ($courts as $court) {
-            $this->renderCheck($monitor->check($court));
+            $check = $monitor->check($court);
+            $this->renderCheck($check);
+
+            if ($check->outcome === 'source_circuit_open') {
+                $this->warn('SUDRF circuit is open; remaining probes are skipped.');
+
+                break;
+            }
         }
 
         return self::SUCCESS;

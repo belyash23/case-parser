@@ -4,13 +4,16 @@ namespace App\Models\Parser;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Court extends Model
 {
     use HasFactory;
 
     protected $fillable = [
+        'region_id',
         'name',
         'region',
         'city',
@@ -35,7 +38,7 @@ class Court extends Model
         'source_type' => 'sudrf',
         'status' => 'active',
         'is_enabled' => true,
-        'min_request_interval_ms' => 3000,
+        'min_request_interval_ms' => 10000,
         'max_parallel_requests' => 1,
         'timeout_ms' => 30000,
         'retry_count' => 2,
@@ -51,6 +54,21 @@ class Court extends Model
             'last_checked_at' => 'datetime',
             'last_successful_crawl_at' => 'datetime',
         ];
+    }
+
+    public function region(): BelongsTo
+    {
+        return $this->belongsTo(Region::class);
+    }
+
+    public function crawlState(): HasOne
+    {
+        return $this->hasOne(CourtCrawlState::class);
+    }
+
+    public function crawlWorkItems(): HasMany
+    {
+        return $this->hasMany(CrawlWorkItem::class);
     }
 
     public function caseInstances(): HasMany

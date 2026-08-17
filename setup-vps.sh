@@ -124,6 +124,8 @@ write_env_file() {
     set_env "CACHE_STORE" "database"
     set_env "SESSION_DRIVER" "database"
     set_env "QUEUE_CONNECTION" "database"
+    set_env "DATABASE_BACKUP_ENABLED" "true"
+    set_env "PARSER_OPERATIONAL_PRUNING_ENABLED" "true"
     set_env "PARSER_VERIFY_TLS" "false"
 
     chown "${DEPLOY_USER}:${DEPLOY_USER}" "${env_file}"

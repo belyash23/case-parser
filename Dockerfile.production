@@ -1,6 +1,6 @@
 FROM node:22-bookworm AS node_runtime
 
-FROM php:8.4-cli-bookworm
+FROM php:8.5-fpm-bookworm
 
 ENV COMPOSER_ALLOW_SUPERUSER=1 \
     COMPOSER_HOME=/tmp/composer \
@@ -15,6 +15,8 @@ RUN apt-get update \
         libicu-dev \
         libzip-dev \
         libonig-dev \
+        nginx \
+        default-mysql-client \
     && docker-php-ext-install \
         bcmath \
         intl \
@@ -27,6 +29,7 @@ RUN apt-get update \
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node_runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY nginx.production.conf /etc/nginx/nginx.conf
 
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
@@ -35,3 +38,7 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 
 WORKDIR /var/www/html
 EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl --fail --silent --show-error http://127.0.0.1:8000/up || exit 1
+
+CMD ["sh", "-lc", "php-fpm -D && exec nginx -g 'daemon off;'"]

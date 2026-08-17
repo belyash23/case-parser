@@ -3,11 +3,13 @@
 namespace App\Models\Parser;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ParserRun extends Model
 {
     protected $fillable = [
+        'crawl_campaign_id',
         'run_type',
         'status',
         'started_at',
@@ -36,6 +38,11 @@ class ParserRun extends Model
         ];
     }
 
+    public function campaign(): BelongsTo
+    {
+        return $this->belongsTo(CrawlCampaign::class, 'crawl_campaign_id');
+    }
+
     public function requestLogs(): HasMany
     {
         return $this->hasMany(RequestLog::class);
@@ -45,6 +52,14 @@ class ParserRun extends Model
     {
         $this->forceFill([
             'status' => 'completed',
+            'finished_at' => now(),
+        ])->save();
+    }
+
+    public function markPaused(): void
+    {
+        $this->forceFill([
+            'status' => 'paused',
             'finished_at' => now(),
         ])->save();
     }

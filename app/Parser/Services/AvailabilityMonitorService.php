@@ -2,10 +2,12 @@
 
 namespace App\Parser\Services;
 
+use App\Admin\Services\ParserSettings;
 use App\Models\Parser\AvailabilityCheck;
 use App\Models\Parser\Court;
 use App\Models\Parser\RequestLog;
 use App\Parser\DTO\AvailabilityProbeResult;
+use App\Parser\Exceptions\SourceCircuitOpenException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
@@ -16,6 +18,8 @@ class AvailabilityMonitorService
     public function __construct(
         private readonly AvailabilityCheckRecorder $recorder,
         private readonly AvailabilityOutcomeClassifier $classifier,
+        private readonly SudrfSourceGuard $sourceGuard,
+        private readonly ParserSettings $settings,
     ) {}
 
     /**
@@ -24,7 +28,7 @@ class AvailabilityMonitorService
      */
     public function reuseRecentParserActivity(array $courtIds): Collection
     {
-        $windowMinutes = max(1, (int) config('monitoring.sudrf.reuse_parser_window_minutes', 10));
+        $windowMinutes = max(1, $this->settings->current()->monitor_reuse_window_minutes);
 
         return RequestLog::query()
             ->whereIn('court_id', $courtIds)
@@ -49,7 +53,7 @@ class AvailabilityMonitorService
 
     private function recentParserRequest(Court $court): ?RequestLog
     {
-        $windowMinutes = max(1, (int) config('monitoring.sudrf.reuse_parser_window_minutes', 10));
+        $windowMinutes = max(1, $this->settings->current()->monitor_reuse_window_minutes);
 
         return RequestLog::query()
             ->where('court_id', $court->id)
@@ -61,15 +65,17 @@ class AvailabilityMonitorService
     private function probe(Court $court): AvailabilityProbeResult
     {
         $url = $this->caseListUrl($court);
-        $startedAt = hrtime(true);
 
         try {
+            $this->sourceGuard->reserveRequestSlot();
+            $startedAt = hrtime(true);
+            $settings = $this->settings->current();
             $request = Http::withHeaders([
                 'User-Agent' => config('parser.user_agent'),
                 'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             ])
-                ->connectTimeout(max(1, (int) config('monitoring.sudrf.connect_timeout_seconds', 10)))
-                ->timeout(max(1, (int) config('monitoring.sudrf.timeout_seconds', 45)));
+                ->connectTimeout(max(1, $settings->monitor_connect_timeout_seconds))
+                ->timeout(max(1, $settings->monitor_timeout_seconds));
 
             if (! (bool) config('parser.verify_tls', false)) {
                 $request = $request->withoutVerifying();
@@ -77,6 +83,8 @@ class AvailabilityMonitorService
 
             $response = $request->get($url);
             $body = $response->body();
+            $retryAfterSeconds = $this->classifier->retryAfterSeconds($response->header('Retry-After'));
+            $this->sourceGuard->recordHttpResponse($response->status(), $retryAfterSeconds);
 
             return new AvailabilityProbeResult(
                 url: $url,
@@ -84,15 +92,31 @@ class AvailabilityMonitorService
                 httpStatus: $response->status(),
                 durationMs: $this->elapsedMilliseconds($startedAt),
                 responseSizeBytes: strlen($body),
-                retryAfterSeconds: $this->classifier->retryAfterSeconds($response->header('Retry-After')),
+                retryAfterSeconds: $retryAfterSeconds,
                 errorType: $response->successful() ? null : 'HTTP_'.$response->status(),
                 errorMessage: $response->successful() ? null : 'HTTP status '.$response->status(),
                 responseHash: hash('sha256', $body),
             );
+        } catch (SourceCircuitOpenException $exception) {
+            return new AvailabilityProbeResult(
+                url: $url,
+                outcome: 'source_circuit_open',
+                httpStatus: null,
+                durationMs: null,
+                responseSizeBytes: null,
+                retryAfterSeconds: $exception->cooldownUntil !== null
+                    ? (int) max(0, now()->diffInSeconds($exception->cooldownUntil, false))
+                    : null,
+                errorType: class_basename($exception),
+                errorMessage: $exception->getMessage(),
+                responseHash: null,
+            );
         } catch (ConnectionException $exception) {
-            return $this->failedProbe($url, $startedAt, $exception);
+            $this->sourceGuard->recordConnectionFailure($this->isTimeout($exception));
+
+            return $this->failedProbe($url, $startedAt ?? hrtime(true), $exception);
         } catch (Throwable $exception) {
-            return $this->failedProbe($url, $startedAt, $exception);
+            return $this->failedProbe($url, $startedAt ?? hrtime(true), $exception);
         }
     }
 
@@ -123,5 +147,10 @@ class AvailabilityMonitorService
     private function elapsedMilliseconds(int $startedAt): int
     {
         return (int) round((hrtime(true) - $startedAt) / 1000000);
+    }
+
+    private function isTimeout(Throwable $exception): bool
+    {
+        return str_contains($this->classifier->fromError($exception::class, $exception->getMessage()), 'timeout');
     }
 }

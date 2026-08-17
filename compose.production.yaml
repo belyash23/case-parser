@@ -6,9 +6,10 @@ services:
     image: case-parser-app:latest
     container_name: case-parser-app
     restart: unless-stopped
+    stop_grace_period: 30s
+    init: true
     working_dir: /var/www/html
     user: "${APP_UID:-1000}:${APP_GID:-1000}"
-    command: ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8000"]
     env_file:
       - .env
     environment:
@@ -24,9 +25,33 @@ services:
     image: case-parser-app:latest
     container_name: case-parser-scheduler
     restart: unless-stopped
+    stop_grace_period: 3m
+    init: true
     working_dir: /var/www/html
     user: "${APP_UID:-1000}:${APP_GID:-1000}"
     command: ["php", "artisan", "schedule:work", "--no-interaction"]
+    healthcheck:
+      disable: true
+    env_file:
+      - .env
+    environment:
+      COMPOSER_HOME: /tmp/composer
+      npm_config_cache: /tmp/npm
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - .:/var/www/html
+  queue:
+    image: case-parser-app:latest
+    container_name: case-parser-queue
+    restart: unless-stopped
+    stop_grace_period: 16m
+    init: true
+    working_dir: /var/www/html
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    command: ["php", "artisan", "queue:work", "--queue=parser,reports,default", "--sleep=3", "--timeout=900", "--no-interaction"]
+    healthcheck:
+      disable: true
     env_file:
       - .env
     environment:

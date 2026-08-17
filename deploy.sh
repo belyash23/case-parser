@@ -85,7 +85,7 @@ log "Caching production config"
 run_app php artisan optimize:clear
 run_app php artisan optimize
 
-log "Restarting application and scheduler containers"
-docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --force-recreate "${SERVICE}" scheduler
+log "Restarting application, scheduler, and queue containers"
+docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --force-recreate --wait --wait-timeout 90 "${SERVICE}" scheduler queue
 
 docker compose -f "${COMPOSE_FILE}" ps

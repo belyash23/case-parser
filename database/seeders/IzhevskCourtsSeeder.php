@@ -45,7 +45,7 @@ class IzhevskCourtsSeeder extends Seeder
                     'layout_type' => 'sudrf_mobile',
                     'status' => 'active',
                     'is_enabled' => true,
-                    'min_request_interval_ms' => 3000,
+                    'min_request_interval_ms' => 10000,
                     'max_parallel_requests' => 1,
                     'timeout_ms' => 30000,
                     'retry_count' => 2,

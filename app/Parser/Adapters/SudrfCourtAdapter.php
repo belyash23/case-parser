@@ -289,6 +289,7 @@ class SudrfCourtAdapter implements CourtSourceAdapter
                 documentNumber: $this->extractDocumentNumber($text),
                 documentDate: $this->dateNormalizer->normalize($text),
                 documentKind: $this->normalizeDocumentKind($text.' '.$href),
+                sourceUrl: $url,
             );
         }
 
@@ -496,6 +497,7 @@ class SudrfCourtAdapter implements CourtSourceAdapter
     private function extractCaseNumbers(string $plainText): array
     {
         preg_match_all('/(?:\b|[\x{2116}N]\s*)((?:[0-9]{1,4}-[0-9\p{L}.\-\/]+|[\p{L}]{1,3}-?[0-9]{1,6})\/[0-9]{4})\b/u', $plainText, $matches);
+
         return collect($matches[1] ?? [])
             ->map(fn (string $number): string => Html::normalizeText($number))
             ->filter(fn (string $number): bool => $number !== '')
