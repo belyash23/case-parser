@@ -55,10 +55,6 @@ docker compose -f "${COMPOSE_FILE}" build "${SERVICE}"
 log "Installing PHP dependencies"
 run_app composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 
-log "Installing Node dependencies and building assets"
-run_app npm ci
-run_app npm run build
-
 if ! grep -q '^APP_KEY=base64:' .env 2>/dev/null; then
     log "Generating application key"
     run_app php artisan key:generate --force --no-interaction
@@ -69,6 +65,11 @@ run_app php artisan config:clear
 run_app php artisan route:clear
 run_app php artisan view:clear
 run_app php artisan storage:link --force || true
+
+log "Installing Node dependencies and building assets"
+run_app npm ci
+run_app php artisan wayfinder:generate --with-form --no-interaction
+run_app npm run build
 
 if [[ "${FRESH_DB}" -eq 1 ]]; then
     log "Refreshing database from scratch (--fresh-db)"
